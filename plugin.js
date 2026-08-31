@@ -5,20 +5,15 @@
 (function () {
     'use strict'
 
-    var VERSION = 18
+    var VERSION = 19
     if (window.lampa_own_torrent_plugin === VERSION) return
     window.lampa_own_torrent_plugin = VERSION
     // legacy guard from local-media builds
     window.own_torrent_plugin = VERSION
 
     var BTN = 'lot-own-btn'
-    var BTN_LAST = 'lot-last-btn'
     var HEAD = 'lot-head'
-    var STORE = 'own_torrent_links' // keep key — do not break saved magnets
-
     var LABEL_OWN = 'Своя ссылка'
-    var LABEL_LAST = 'Последняя торрент ссылка'
-    var LABEL_LAST_SHORT = 'Мой торрент'
 
     function as$(node) {
         if (!node) return $()
@@ -82,40 +77,6 @@
         name = name.replace(/\bS\d{1,2}E\d{1,2}\b.*$/i, '')
         name = name.replace(/\(?((19|20)\d{2})\)?/, ' ')
         return name.replace(/\s+/g, ' ').trim()
-    }
-
-    function shortLink(link) {
-        if (!link) return ''
-        if (link.indexOf('magnet:') === 0) {
-            var dn = guessName(link)
-            return dn ? dn.slice(0, 42) : 'magnet…'
-        }
-        return link.length > 42 ? link.slice(0, 42) + '…' : link
-    }
-
-    function linksMap() {
-        var map = Lampa.Storage.get(STORE, '{}')
-        if (typeof map === 'string') {
-            try { map = JSON.parse(map) } catch (e) { map = {} }
-        }
-        return map && typeof map === 'object' ? map : {}
-    }
-
-    function saveLink(card, link) {
-        if (!isRealCard(card) || !link) return
-        var map = linksMap()
-        map[String(card.id)] = {
-            link: link,
-            title: card.title || card.name || '',
-            time: Date.now()
-        }
-        Lampa.Storage.set(STORE, map)
-    }
-
-    function getSaved(card) {
-        if (!isRealCard(card)) return null
-        var item = linksMap()[String(card.id)]
-        return item && item.link ? item : null
     }
 
     function langCode(value) {
@@ -387,7 +348,6 @@
     }
 
     function launch(card, link) {
-        saveLink(card, link)
         bindMovieToActivity(card)
 
         try { Lampa.Storage.set('torrserver_savedb', true) } catch (e) {}
@@ -402,23 +362,6 @@
             MagnetUri: link.indexOf('magnet:') === 0 ? link : '',
             Link: link.indexOf('magnet:') === 0 ? '' : link
         }, card)
-    }
-
-    function launchSaved(movie) {
-        var saved = getSaved(movie)
-        if (!saved) {
-            Lampa.Noty.show('Своей ссылки для этого фильма ещё нет')
-            return
-        }
-
-        if (!Lampa.Torserver || !Lampa.Torserver.url()) {
-            Lampa.Noty.show('Сначала укажи TorrServer в настройках')
-            return
-        }
-
-        enrichMovie(movie, function (card) {
-            launch(card, saved.link)
-        })
     }
 
     function askNewLink(movie) {
@@ -469,41 +412,6 @@
 
         if (!Lampa.Torserver || !Lampa.Torserver.url()) {
             Lampa.Noty.show('Сначала укажи TorrServer в настройках')
-            return
-        }
-
-        var saved = getSaved(movie)
-
-        // On a film that already has a saved link — offer last / new
-        if (isRealCard(movie) && saved) {
-            Lampa.Select.show({
-                title: LABEL_OWN,
-                items: [
-                    {
-                        title: LABEL_LAST,
-                        subtitle: shortLink(saved.link),
-                        use_last: true
-                    },
-                    {
-                        title: 'Вставить новую',
-                        subtitle: 'magnet или .torrent'
-                    }
-                ],
-                onBack: restoreFocus,
-                onSelect: function (choice) {
-                    if (choice.use_last) {
-                        restoreFocus()
-                        setTimeout(function () {
-                            launchSaved(movie)
-                        }, 40)
-                        return
-                    }
-
-                    setTimeout(function () {
-                        askNewLink(movie)
-                    }, 80)
-                }
-            })
             return
         }
 
@@ -627,76 +535,15 @@
             addOwnTorrentLink(movie)
         })
 
-        // Short label in filter bar (full name on the movie card)
-        if (isRealCard(movie) && getSaved(movie) && !root.find('.' + BTN_LAST).length) {
-            var last = button.clone(false)
-            last.removeClass(BTN + ' focus').addClass(BTN_LAST)
-            last.find('div').text(LABEL_LAST_SHORT)
-            if (!last.find('div').length) last.html('<div>' + LABEL_LAST_SHORT + '</div>')
-            last.off('hover:enter hover:focus hover:hover hover:touch')
-            last.on('hover:enter', function () {
-                launchSaved(movie)
-            })
-            button.after(last)
-        }
-
         setTimeout(refreshContentNav, 120)
     }
 
-    function injectFullLastButton(e) {
-        if (e.type !== 'complite' && e.type !== 'build') return
-        if (e.type === 'build' && e.name && e.name !== 'start') return
-
-        var movie = (e.data && e.data.movie) || movieFrom(e.object)
-        if (!isRealCard(movie) || !getSaved(movie)) return
-
-        var root = e.body && e.body.length ? e.body : $()
-        if (!root.length && e.link && e.link.html) root = as$(e.link.html)
-        if (!root.length) root = activeRoot()
-        if (!root.length) return
-
-        // Drop leftover buttons from older builds
-        root.find('.' + BTN + ', .own-torrent-link-btn').remove()
-
-        if (root.find('.' + BTN_LAST + ', .own-torrent-last-btn').length) return
-
-        var torrent = root.find('.view--torrent').not('.' + BTN_LAST).first()
-        var wrap = torrent.parent()
-        if (!wrap.length) wrap = root.find('.full-start-new__buttons, .full-start__buttons').first()
-        if (!wrap.length) return
-
-        var lastBtn
-
-        if (torrent.length) {
-            // Clone Torrents button → same icon + style, only label changes
-            lastBtn = torrent.clone(false)
-            lastBtn.removeClass('view--torrent focus ' + BTN).addClass(BTN_LAST)
-            lastBtn.off('hover:enter hover:focus hover:hover hover:touch')
-            if (lastBtn.find('span').length) {
-                lastBtn.find('span').text(LABEL_LAST)
-            } else {
-                lastBtn.append('<span>' + LABEL_LAST + '</span>')
-            }
-        } else {
-            lastBtn = $(
-                '<div class="full-start__button selector ' + BTN_LAST + '">' +
-                    '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' +
-                        '<path d="M3.9 12a5 5 0 015-5h3v2h-3a3 3 0 100 6h3v2h-3a5 5 0 01-5-5zm7.1-1h2v2h-2v-2zm2.1-4h3a5 5 0 010 10h-3v-2h3a3 3 0 100-6h-3V7z"/>' +
-                    '</svg>' +
-                    '<span>' + LABEL_LAST + '</span>' +
-                '</div>'
-            )
-        }
-
-        lastBtn.on('hover:enter', function () {
-            launchSaved(movie)
-        })
-
-        if (torrent.length) torrent.after(lastBtn)
-        else wrap.append(lastBtn)
+    function dropLegacyLastButtons() {
+        $('.lot-last-btn, .own-torrent-last-btn, .own-torrent-link-btn').remove()
     }
 
     function injectAll() {
+        dropLegacyLastButtons()
         syncHeadButton()
         injectTorrentsTab()
     }
@@ -704,10 +551,10 @@
     function startPlugin() {
         $('style.own-torrent-style, style.lot-style').remove()
         $('.own-torrent-head, .' + HEAD).remove()
+        dropLegacyLastButtons()
 
         patchTorrentApi()
         ensureHeadButton()
-        Lampa.Listener.follow('full', injectFullLastButton)
         Lampa.Listener.follow('activity', function (e) {
             if (e.type === 'start' || e.type === 'archive') {
                 setTimeout(injectAll, 80)
