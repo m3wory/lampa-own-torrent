@@ -5,21 +5,14 @@
 (function () {
     'use strict'
 
-    var VERSION = 21
+    var VERSION = 22
     if (window.lampa_own_torrent_plugin === VERSION) return
     window.lampa_own_torrent_plugin = VERSION
     // legacy guard from local-media builds
     window.own_torrent_plugin = VERSION
 
-    var BTN = 'lot-own-btn'
     var HEAD = 'lot-head'
     var LABEL_OWN = 'Своя ссылка'
-
-    function as$(node) {
-        if (!node) return $()
-        if (node.jquery) return node
-        return $(node)
-    }
 
     function isRealCard(card) {
         var id = parseInt(card && card.id, 10)
@@ -598,28 +591,6 @@
         askNewLink(movie)
     }
 
-    function activeRoot() {
-        var root = $('.activity--active')
-        if (root.length) return root
-
-        try {
-            var active = Lampa.Activity.active()
-            if (active && active.activity) return as$(active.activity.render())
-        } catch (e) {}
-
-        return $()
-    }
-
-    function refreshContentNav() {
-        try {
-            if (Lampa.Controller.enabled().name !== 'content') return
-            var active = Lampa.Activity.active()
-            if (active && active.activity && active.activity.toggle) {
-                active.activity.toggle()
-            }
-        } catch (e) {}
-    }
-
     function headLinkSvg() {
         // Same language as native head icons: currentColor fill, 24 viewBox
         return (
@@ -673,59 +644,19 @@
         ensureHeadButton()
 
         var active = Lampa.Activity.active() || {}
-        var show = active.component === 'mytorrents' || active.component === 'torrents'
+        var movie = movieFrom(active)
+        // Chain icon only on the Torrents page, not on an open media card
+        var show = (active.component === 'mytorrents' || active.component === 'torrents') && !isRealCard(movie)
         $('.' + HEAD).toggleClass('hide', !show)
     }
 
-    function injectTorrentsTab() {
-        var active = Lampa.Activity.active() || {}
-        if (active.component !== 'torrents') return
-
-        var movie = movieFrom(active)
-        var root = activeRoot()
-        if (!root.length) return
-
-        root.find('.explorer__files-head').removeClass('hide')
-
-        if (root.find('.' + BTN).length) return
-
-        var search = root.find('.filter--search').last()
-        var button
-
-        if (search.length) {
-            button = search.clone(false)
-            button.removeClass('filter--search focus').addClass(BTN)
-            button.find('div').text(LABEL_OWN)
-            if (!button.find('div').length) button.html('<div>' + LABEL_OWN + '</div>')
-            button.off('hover:enter hover:focus hover:hover hover:touch')
-            search.after(button)
-        } else {
-            var line = root.find('.torrent-filter').last()
-            if (!line.length) return
-
-            button = $(
-                '<div class="simple-button selector ' + BTN + '">' +
-                    '<div>' + LABEL_OWN + '</div>' +
-                '</div>'
-            )
-            line.append(button)
-        }
-
-        button.on('hover:enter', function () {
-            addOwnTorrentLink(movie)
-        })
-
-        setTimeout(refreshContentNav, 120)
-    }
-
     function dropLegacyLastButtons() {
-        $('.lot-last-btn, .own-torrent-last-btn, .own-torrent-link-btn').remove()
+        $('.lot-last-btn, .own-torrent-last-btn, .own-torrent-link-btn, .lot-own-btn').remove()
     }
 
     function injectAll() {
         dropLegacyLastButtons()
         syncHeadButton()
-        injectTorrentsTab()
     }
 
     function startPlugin() {
@@ -742,7 +673,6 @@
                 setTimeout(injectAll, 1200)
             }
         })
-        // Filter bar mounts late after parser response
         setInterval(injectAll, 1000)
     }
 
