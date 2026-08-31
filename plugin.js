@@ -5,7 +5,7 @@
 (function () {
     'use strict'
 
-    var VERSION = 20
+    var VERSION = 21
     if (window.lampa_own_torrent_plugin === VERSION) return
     window.lampa_own_torrent_plugin = VERSION
     // legacy guard from local-media builds
@@ -86,16 +86,60 @@
         return file
     }
 
+    var TITLE_STOP = /^(?:480p|576p|720p|1080[pi]|1440p|2160p|4320p|4k|8k|uhd|hdr10\+?|hdr|sdr|dv|dolby|vision|atmos|truehd|dts(?:hd)?|dd[p]?[257]|aac|ac3|eac3|e-ac3|opus|flac|bluray|blu-ray|bdremux|remux|bdrip|brrip|hddvd|hdrip|hdtvrip|hdtv|web-?dlrip|web-?dl|webrip|webdl|dvdrip|dvdscr|bdmv|imax|x264|x265|h264|h265|hevc|avc|xvid|divx|10bit|8bit|hi10p|pgs|srt|ass|m2ts|mkv|mp4|avi|mvo|dvo|avo|dub|dubbing|lostfilm|newstudio|amzn|nf|dsnp|atvp|rus|eng|ukr|ua)$/i
+
     function guessName(value) {
         var name = torrentTitleFromLink(value) || String(value || '')
         if (!name || name.indexOf('magnet:') === 0 || /^https?:\/\//i.test(name)) return ''
 
-        name = name.replace(/\.[a-z0-9]{2,4}$/i, '')
-        name = name.replace(/[._]/g, ' ')
-        name = name.replace(/\b(1080p|720p|2160p|4k|uhd|bluray|blu-ray|webrip|web-dl|webdl|x264|x265|hevc|hdr|dts|aac|ac3|hdtv|proper|extended|remux|multi|rus|eng)(\b|.).*$/i, '')
-        name = name.replace(/\bS\d{1,2}E\d{1,2}\b.*$/i, '')
-        name = name.replace(/\(?((19|20)\d{2})\)?/, ' ')
-        return name.replace(/\s+/g, ' ').trim()
+        name = decodeUriPart(name)
+        name = name.replace(/www\./ig, '')
+        name = name.replace(/\[[^\]]*\]/g, ' ')
+        name = name.replace(/\{[^}]*\}/g, ' ')
+        name = name.replace(/\.(torrent|mkv|mp4|avi|ts|m2ts|mov|wmv)$/i, '')
+        name = name.replace(/[._+]+/g, ' ')
+        name = name.replace(/\bS\d{1,2}(?:E\d{1,2})?\b.*$/i, ' ')
+        name = name.replace(/\b(?:season|сезон)\s*\d+.*$/i, ' ')
+        name = name.replace(/\b\d{1,2}\s*[xх]\s*\d{1,2}\b.*$/i, ' ')
+        name = name.replace(/\b(?:h|x)\s*[26]64\b/ig, ' ')
+        name = name.replace(/\bddp?\s*[257]\s*[. ]\s*[01]\b/ig, ' ')
+
+        var parts = name.split(/[\s|]+/)
+        var kept = []
+        var i
+        var token
+
+        for (i = 0; i < parts.length; i++) {
+            token = parts[i].replace(/[().,]+/g, '')
+            if (!token) continue
+            if (/^(19|20)\d{2}$/.test(token)) break
+            if (/^\d{3,4}p$/i.test(token)) break
+            if (TITLE_STOP.test(token) && kept.length) break
+            if (/^[A-Z][A-Z0-9]+-[A-Z0-9]+$/i.test(token) && kept.length) break
+            kept.push(token)
+        }
+
+        name = kept.join(' ').replace(/\s+/g, ' ').trim()
+        name = name.replace(/\s+-\s+[A-Z0-9]{2,}$/i, '').trim()
+        return name
+    }
+
+    function queryCandidates(raw) {
+        var text = torrentTitleFromLink(raw) || String(raw || '')
+        var seen = {}
+        var out = []
+
+        function add(value) {
+            var cleaned = guessName(value)
+            var key = cleaned.toLowerCase()
+            if (!cleaned || seen[key]) return
+            seen[key] = true
+            out.push(cleaned)
+        }
+
+        String(text).split(/\s*\/\s*/).forEach(add)
+        add(text)
+        return out
     }
 
     function titleFromServerInfo(info) {
@@ -243,6 +287,7 @@
             var active = Lampa.Activity.active() || {}
             var movie = movieFrom(active)
             if (isRealCard(movie)) return movie
+            if (active.activity && isRealCard(active.activity.movie)) return active.activity.movie
         } catch (e) {}
         return null
     }
@@ -279,7 +324,8 @@
                 var block = result && result[type]
                 var list = (block && block.results) || []
                 list.forEach(function (item) {
-                    if (!item || !item.id || !item.poster_path) return
+                    if (!item || !item.id) return
+                    if (!item.poster_path && !item.poster && !item.img) return
                     item.media_type = type
                     cards.push(toCard(item))
                 })
@@ -298,7 +344,8 @@
             network.timeout(10000)
             network.silent(Lampa.TMDB.api(path), function (json) {
                 var cards = (json.results || []).filter(function (item) {
-                    return (item.media_type === 'movie' || item.media_type === 'tv') && item.poster_path && item.id
+                    return (item.media_type === 'movie' || item.media_type === 'tv') && item.id &&
+                        (item.poster_path || item.poster || item.img)
                 }).slice(0, 12).map(toCard)
                 doneManual(cards)
             }, function () {
@@ -310,6 +357,8 @@
             Lampa.Api.search({ query: query }, function (result) {
                 var cards = fromApiSearch(result || {})
                 if (cards.length) return done(cards)
+                manual(done)
+            }, function () {
                 manual(done)
             })
             return
@@ -468,28 +517,14 @@
     }
 
     function searchCardAndLaunch(link, torrentName) {
-        var query = guessName(torrentName) || guessName(link)
-
-        function notFound() {
-            Lampa.Noty.show('Не найдено. Включи TMDB-прокси: https://cub.red/plugin/tmdb-proxy')
-        }
-
-        function search(queryText, onEmpty) {
-            if (!queryText) {
-                if (onEmpty) onEmpty()
-                else restoreFocus()
-                return
-            }
-
-            pickTmdbCard(queryText, function (card) {
-                if (card) {
-                    bindAndLaunch(card, link, torrentName)
-                    return
-                }
-                if (onEmpty) onEmpty()
-                else notFound()
-            })
-        }
+        var queries = queryCandidates(torrentName).concat(queryCandidates(link))
+        var seen = {}
+        queries = queries.filter(function (item) {
+            var key = item.toLowerCase()
+            if (seen[key]) return false
+            seen[key] = true
+            return true
+        })
 
         function askTitle(prefill) {
             askText('Название фильма / сериала', prefill || '', function (typed) {
@@ -497,11 +532,33 @@
                     restoreFocus()
                     return
                 }
-                search(typed, notFound)
+                pickTmdbCard(typed, function (card) {
+                    if (card) {
+                        bindAndLaunch(card, link, torrentName)
+                        return
+                    }
+                    Lampa.Noty.show('Карточка не найдена')
+                })
             })
         }
 
-        if (query) search(query, function () { askTitle(query) })
+        function tryQuery(index) {
+            if (index >= queries.length) {
+                Lampa.Noty.show('Не распознал фильм по названию торрента')
+                askTitle(queries[0] || '')
+                return
+            }
+
+            pickTmdbCard(queries[index], function (card) {
+                if (card) {
+                    bindAndLaunch(card, link, torrentName)
+                    return
+                }
+                tryQuery(index + 1)
+            })
+        }
+
+        if (queries.length) tryQuery(0)
         else askTitle('')
     }
 
@@ -518,8 +575,9 @@
                 return
             }
 
-            if (isRealCard(movie)) {
-                bindAndLaunch(movie, link)
+            var card = isRealCard(movie) ? movie : currentMovie()
+            if (isRealCard(card)) {
+                bindAndLaunch(card, link)
                 return
             }
 
@@ -573,8 +631,8 @@
 
     function onHeadEnter() {
         var active = Lampa.Activity.active() || {}
-        var movie = active.component === 'torrents' ? movieFrom(active) : currentMovie()
-        addOwnTorrentLink(movie)
+        var movie = movieFrom(active)
+        addOwnTorrentLink(isRealCard(movie) ? movie : currentMovie())
     }
 
     function ensureHeadButton() {
